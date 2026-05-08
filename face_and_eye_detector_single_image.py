@@ -12,6 +12,9 @@ eye_cascade = cv.CascadeClassifier("haarcascades/haarcascade_eye.xml")
 #Read image in img and convert it to grayscale and store in gray.
 #Image is converted to grayscale, as face cascade doesn't require to operate on coloured images.
 img = cv.imread('images/test.jpeg')
+if img is None:
+    print("Không tìm thấy ảnh 'images/test.jpeg'")
+    raise SystemExit(1)
 gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 
 #Detect all faces in image.
@@ -32,5 +35,9 @@ for (x,y,w,h) in faces:
         cv.rectangle(roi_color,(ex,ey),(ex+ew,ey+eh),(0,255,0),2)
 
 cv.imshow('Image', img)
-cv.waitKey(0)
+while True:
+    if cv.waitKey(1) & 0xFF == ord('q'):
+        break
+    if cv.getWindowProperty('Image', cv.WND_PROP_VISIBLE) < 1:
+        break
 cv.destroyAllWindows()

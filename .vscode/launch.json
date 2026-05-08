@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run: Drowsiness Detector (drowsy env)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/drowsiness_detect.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "python": "C:/Users/ADMIN/.micromamba/envs/drowsy/python.exe",
+      "pythonPath": "C:/Users/ADMIN/.micromamba/envs/drowsy/python.exe",
+      "env": {
+        "PYTHONNOUSERSITE": "1",
+        "PATH": "C:/Users/ADMIN/.micromamba/envs/drowsy;C:/Users/ADMIN/.micromamba/envs/drowsy/Library/bin;C:/Users/ADMIN/.micromamba/envs/drowsy/Scripts;${env:PATH}"
+      }
+    },
+    {
+      "name": "Run: Face+Eye Webcam (drowsy env)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/face_and_eye_detector_webcam_video.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "python": "C:/Users/ADMIN/.micromamba/envs/drowsy/python.exe",
+      "pythonPath": "C:/Users/ADMIN/.micromamba/envs/drowsy/python.exe",
+      "env": {
+        "PYTHONNOUSERSITE": "1",
+        "PATH": "C:/Users/ADMIN/.micromamba/envs/drowsy;C:/Users/ADMIN/.micromamba/envs/drowsy/Library/bin;C:/Users/ADMIN/.micromamba/envs/drowsy/Scripts;${env:PATH}"
+      }
+    },
+    {
+      "name": "Run: Face+Eye Single Image (drowsy env)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/face_and_eye_detector_single_image.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "python": "C:/Users/ADMIN/.micromamba/envs/drowsy/python.exe",
+      "pythonPath": "C:/Users/ADMIN/.micromamba/envs/drowsy/python.exe",
+      "env": {
+        "PYTHONNOUSERSITE": "1",
+        "PATH": "C:/Users/ADMIN/.micromamba/envs/drowsy;C:/Users/ADMIN/.micromamba/envs/drowsy/Library/bin;C:/Users/ADMIN/.micromamba/envs/drowsy/Scripts;${env:PATH}"
+      }
+    }
+  ]
+}
