@@ -3,4 +3,5 @@ scipy
 opencv-python
 imutils
 pygame
-dlib
+dlib-bin; platform_system == "Windows"
+dlib; platform_system != "Windows"

@@ -25,9 +25,13 @@ import cv2
 import dlib
 import numpy as np
 import pygame
-import tensorflow as tf
 from imutils import face_utils
 from scipy.spatial import distance
+
+try:
+    import tensorflow as tf
+except ModuleNotFoundError:
+    tf = None
 
 # ─────────────────────────────────────────────────────────────
 # 1) LOAD MODEL CNN (nếu có)
@@ -48,15 +52,18 @@ else:
         print(f"⚠️  Không tìm thấy '{CLASS_JSON}'.")
         print("   Dùng EAR fallback.")
     else:
-        cnn_model = tf.keras.models.load_model(MODEL_PATH)
-        with open(CLASS_JSON, encoding="utf-8") as f:
-            idx_to_class = json.load(f)
+        if tf is None:
+            print("⚠️  Chưa cài tensorflow. Dùng EAR fallback.")
+        else:
+            cnn_model = tf.keras.models.load_model(MODEL_PATH)
+            with open(CLASS_JSON, encoding="utf-8") as f:
+                idx_to_class = json.load(f)
 
-        # idx_to_class = {"0": "closed", "1": "open", ...}
-        closed_idx = [k for k, v in idx_to_class.items() if v == "closed"]
-        CLOSED_IDX = int(closed_idx[0]) if closed_idx else 1
-        USE_CNN = True
-        print(f"✅ Đã load CNN model. Classes: {idx_to_class}")
+            # idx_to_class = {"0": "closed", "1": "open", ...}
+            closed_idx = [k for k, v in idx_to_class.items() if v == "closed"]
+            CLOSED_IDX = int(closed_idx[0]) if closed_idx else 1
+            USE_CNN = True
+            print(f"✅ Đã load CNN model. Classes: {idx_to_class}")
 
 # ─────────────────────────────────────────────────────────────
 # 2) NGƯỠNG & HẰNG SỐ
