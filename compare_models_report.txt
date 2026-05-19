@@ -1,0 +1,55 @@
+TF: 2.21.0
+Dataset: dataset  val_split=0.2  seed=42
+Val samples: 1581
+Classes (generator): {"closed": 0, "open": 1, "yawn": 2}
+
+=== v1 ===
+model: best_model.h5
+class_json: class_indices.json
+output_dim: 3
+val_acc: 0.9994 (99.94%)
+val_loss: 0.0021
+open→closed: 1   closed→open: 0
+Confusion matrix (rows=true, cols=pred):
+[[394   0   0]
+ [  1 598   0]
+ [  0   0 588]]
+
+              precision    recall  f1-score   support
+
+      closed     0.9975    1.0000    0.9987       394
+        open     1.0000    0.9983    0.9992       599
+        yawn     1.0000    1.0000    1.0000       588
+
+    accuracy                         0.9994      1581
+   macro avg     0.9992    0.9994    0.9993      1581
+weighted avg     0.9994    0.9994    0.9994      1581
+
+
+=== v2 ===
+model: best_model_v2.h5
+class_json: class_indices_v2.json
+output_dim: 3
+val_acc: 1.0000 (100.00%)
+val_loss: 0.0020
+open→closed: 0   closed→open: 0
+Confusion matrix (rows=true, cols=pred):
+[[394   0   0]
+ [  0 599   0]
+ [  0   0 588]]
+
+              precision    recall  f1-score   support
+
+      closed     1.0000    1.0000    1.0000       394
+        open     1.0000    1.0000    1.0000       599
+        yawn     1.0000    1.0000    1.0000       588
+
+    accuracy                         1.0000      1581
+   macro avg     1.0000    1.0000    1.0000      1581
+weighted avg     1.0000    1.0000    1.0000      1581
+
+
+=== Delta (v2 - v1) ===
+Δacc: +0.0006 (+0.06%)
+Δopen→closed: -1
+Δclosed→open: +0

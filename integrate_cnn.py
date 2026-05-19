@@ -22,6 +22,8 @@ Phím tắt:
 import argparse
 import json
 import os
+import sys
+import threading
 import time
 
 import cv2
@@ -36,11 +38,115 @@ try:
 except ModuleNotFoundError:
     tf = None
 
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Driver drowsiness detector (CNN + landmarks)")
+    parser.add_argument("--camera", type=int, default=1, help="Camera index (default: 1)")
+    parser.add_argument(
+        "--backend",
+        choices=["any", "dshow", "msmf"],
+        default=("dshow" if os.name == "nt" else "any"),
+        help=(
+            "OpenCV VideoCapture backend. On Windows, 'dshow' often maps camera indexes more reliably "
+            "when you have multiple cameras (default: any)."
+        ),
+    )
+    parser.add_argument(
+        "--device-name",
+        default="",
+        help=(
+            "DirectShow device name to open (Windows only). Example: --device-name 'USB2.0 Camera'. "
+            "When provided, '--backend' is forced to 'dshow'."
+        ),
+    )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help=(
+            "List available DirectShow camera device names (requires 'pygrabber' on Windows), then exit."
+        ),
+    )
+    parser.add_argument(
+        "--process-width",
+        type=int,
+        default=640,
+        help="Processing width (resizes frames down to this width). Lower = faster (default: 640).",
+    )
+    parser.add_argument(
+        "--process-height",
+        type=int,
+        default=480,
+        help="Requested capture height hint (default: 480).",
+    )
+    parser.add_argument(
+        "--buffer-size",
+        type=int,
+        default=1,
+        help=(
+            "Camera buffer size hint (OpenCV CAP_PROP_BUFFERSIZE). Lower reduces latency (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--drop-frames",
+        type=int,
+        default=0,
+        help=(
+            "Drop N grabbed frames each loop to reduce lag when CPU is slow (default: 0). Example: 2."
+        ),
+    )
+
+    parser.add_argument(
+        "--threaded-capture",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use a background capture thread and always process the newest frame (lower latency). "
+            "Recommended for USB webcams on Windows (default: true)."
+        ),
+    )
+    parser.add_argument("--model", default="best_model.h5", help="Keras .h5 model path")
+    parser.add_argument(
+        "--class-json",
+        default="class_indices.json",
+        help="JSON mapping index->class name (default: class_indices.json)",
+    )
+    return parser.parse_args()
+
+
+ARGS = _parse_args()
+
+# Avoid UnicodeEncodeError on some Windows terminals (e.g., Git Bash piping).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+if ARGS.list_cameras:
+    if os.name != "nt":
+        print("--list-cameras is supported on Windows only.")
+        raise SystemExit(0)
+    try:
+        # Optional dependency. If missing, we print instructions.
+        from pygrabber.dshow_graph import FilterGraph  # type: ignore
+
+        devices = FilterGraph().get_input_devices()
+        if not devices:
+            print("No DirectShow camera devices found.")
+        else:
+            print("DirectShow camera devices:")
+            for i, name in enumerate(devices):
+                print(f"  {i}: {name}")
+    except ModuleNotFoundError:
+        print("Missing optional dependency: pygrabber")
+        print("Install: ./.venv311/Scripts/python.exe -m pip install pygrabber")
+    raise SystemExit(0)
+
 # ─────────────────────────────────────────────────────────────
 # 1) LOAD MODEL CNN (nếu có)
 # ─────────────────────────────────────────────────────────────
-MODEL_PATH = "best_model.h5"
-CLASS_JSON = "class_indices.json"
+MODEL_PATH = ARGS.model
+CLASS_JSON = ARGS.class_json
 
 USE_CNN = False
 cnn_model = None
@@ -76,13 +182,23 @@ MAR_THRESHOLD = 0.55
 MAR_CONSEC_FRAMES = 8           # [FIX-4] cũ: 12 → chậm
 
 # Head pose — chỉ báo khi THỰC SỰ cúi đầu (pitch âm = cúi)
-# [FIX-1] Dùng pitch đã normalize, không dùng abs()
-PITCH_NOD_THRESHOLD = -6        # fallback khi chưa calibrate; do pitch normalize đang có biên độ nhỏ
+# [FIX-1] Dùng pitch đã normalize, không dùng abs().
+#
+# NOTE: Pitch thường âm khi cúi. Khi đã calibrate baseline, dùng:
+#   pitch_drop = baseline_pitch - pitch
+# (dương khi pitch cúi xuống so với baseline). Ngưỡng cũng là số dương.
 POSE_CONSEC_FRAMES = 20
 
-# [NEW] Calibrate pitch baseline (raw) để tránh phụ thuộc góc camera
+# [NEW] Calibrate pitch baseline (normalized) để tránh phụ thuộc góc camera
 POSE_CALIBRATION_SECONDS = 1.5  # thời gian lấy mẫu khi ngồi thẳng
-PITCH_DELTA_THRESHOLD = -12.0   # độ; delta(pitch_norm - baseline) < -12 => cúi đáng kể
+PITCH_DELTA_THRESHOLD = 12.0    # độ; baseline - pitch > 12 => cúi đáng kể
+PITCH_ABS_NOD_LIMIT = -18.0     # độ; fallback tuyệt đối: pitch <= -18 => coi là cúi mạnh
+
+# [NEW] Person switch detection via face signature (helps when 2 users sit similarly)
+FACE_SIG_SIZE = 24
+FACE_SIG_SIM_THRESHOLD = 0.72
+FACE_SIG_EMA = 0.12
+MIN_FACE_AREA_FOR_SIG = 80 * 80
 
 # CNN
 CNN_CLOSED_THRESHOLD = 0.50     # [FIX-2] cũ: 0.55 → khó vượt ngưỡng khi EMA bị smooth
@@ -100,8 +216,8 @@ FACE_CHANGE_AREA_RATIO = 0.55  # hoặc diện tích mặt mới <55% hoặc > (
 CALIBRATION_FRAMES = 75
 
 # [FIX-3] Resize frame xuống 480p để giảm tải dlib + solvePnP
-PROCESS_WIDTH = 640
-PROCESS_HEIGHT = 480
+PROCESS_WIDTH = int(ARGS.process_width)
+PROCESS_HEIGHT = int(ARGS.process_height)
 
 # ─────────────────────────────────────────────────────────────
 # 3) KHỞI TẠO
@@ -147,9 +263,11 @@ _pose_calib_start = None
 _pose_pitch_samples = []
 _pose_calibrated = False
 _pose_baseline_pitch = 0.0
+_pose_delta_threshold = PITCH_DELTA_THRESHOLD
 
 # [NEW] Track last face to reset per-person state
 _last_face_box = None  # (l, t, r, b)
+_last_face_sig = None
 
 MODEL_POINTS = np.array(
     [
@@ -251,6 +369,7 @@ def calibrate_pose_baseline(pitch_norm: float, now_ts: float):
     """Calibrate normalized pitch baseline over a short window while face is detected."""
 
     global _pose_calib_start, _pose_pitch_samples, _pose_calibrated, _pose_baseline_pitch
+    global _pose_delta_threshold
 
     if _pose_calibrated:
         return
@@ -261,9 +380,57 @@ def calibrate_pose_baseline(pitch_norm: float, now_ts: float):
     _pose_pitch_samples.append(float(pitch_norm))
 
     if (now_ts - _pose_calib_start) >= POSE_CALIBRATION_SECONDS and len(_pose_pitch_samples) >= 8:
-        _pose_baseline_pitch = float(np.median(_pose_pitch_samples))
+        samples = np.array(_pose_pitch_samples, dtype=np.float32)
+        baseline = float(np.median(samples))
+
+        # Robust noise estimate (MAD) to adjust nod threshold per person/camera.
+        mad = float(np.median(np.abs(samples - baseline)))
+        robust_sigma = 1.4826 * mad
+        # More noise => require a stronger downward drop to trigger nod.
+        adaptive = 12.0 + 2.0 * robust_sigma
+        _pose_delta_threshold = float(min(25.0, max(10.0, adaptive)))
+
+        _pose_baseline_pitch = baseline
         _pose_calibrated = True
-        print(f"✅ Pose baseline calibrated (pitch): {_pose_baseline_pitch:.1f}°")
+        print(
+            f"✅ Pose baseline calibrated (pitch): {_pose_baseline_pitch:.1f}°  "
+            f"drop_th={_pose_delta_threshold:.1f}° (noise≈{robust_sigma:.1f})"
+        )
+
+
+def _compute_face_signature(gray_img: np.ndarray, box: tuple):
+    """Compute a small, illumination-robust face signature vector for person switch detection."""
+
+    l, t, r, b = box
+    h, w = gray_img.shape[:2]
+    bw = max(1, r - l)
+    bh = max(1, b - t)
+    pad = int(0.12 * max(bw, bh))
+
+    l2 = max(0, l - pad)
+    t2 = max(0, t - pad)
+    r2 = min(w, r + pad)
+    b2 = min(h, b + pad)
+    if (r2 - l2) <= 8 or (b2 - t2) <= 8:
+        return None
+
+    roi = gray_img[t2:b2, l2:r2]
+    try:
+        roi = cv2.resize(roi, (FACE_SIG_SIZE, FACE_SIG_SIZE), interpolation=cv2.INTER_AREA)
+        roi = cv2.equalizeHist(roi)
+    except Exception:
+        return None
+
+    vec = roi.astype(np.float32).reshape(-1)
+    vec -= float(vec.mean())
+    std = float(vec.std())
+    if std > 1e-6:
+        vec /= std
+    # L2 normalize for cosine similarity
+    norm = float(np.linalg.norm(vec))
+    if norm > 1e-6:
+        vec /= norm
+    return vec
 
 
 def _rect_to_box(rect) -> tuple:
@@ -286,6 +453,8 @@ def reset_person_state(reason: str):
     global EAR_COUNTER, MAR_COUNTER, POSE_COUNTER
     global _ema_cnn_conf
     global _pose_calib_start, _pose_pitch_samples, _pose_calibrated, _pose_baseline_pitch
+    global _pose_delta_threshold
+    global _last_face_sig
     global calibrated, EAR_PERSONAL_THRESHOLD, ear_samples
 
     EAR_COUNTER = 0
@@ -297,6 +466,8 @@ def reset_person_state(reason: str):
     _pose_pitch_samples = []
     _pose_calibrated = False
     _pose_baseline_pitch = 0.0
+    _pose_delta_threshold = PITCH_DELTA_THRESHOLD
+    _last_face_sig = None
 
     if not USE_CNN:
         calibrated = False
@@ -457,16 +628,119 @@ def draw_dashboard(frame, ear, mar, pitch, ear_alert, mar_alert, pose_alert):
 # ─────────────────────────────────────────────────────────────
 # 5) VÒNG LẶP CHÍNH
 # ─────────────────────────────────────────────────────────────
-_argp = argparse.ArgumentParser(description="Driver drowsiness detector (CNN + landmarks)")
-_argp.add_argument("--camera", type=int, default=1, help="Camera index (default: 1)")
-ARGS = _argp.parse_args()
+def _open_camera(index: int, backend: str) -> cv2.VideoCapture:
+    if backend == "dshow":
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        # Some OpenCV builds on Windows can't capture by index with CAP_DSHOW.
+        # Fallback to MSMF for index-based capture.
+        if (not cap.isOpened()) and os.name == "nt":
+            cap.release()
+            cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+        return cap
+    if backend == "msmf":
+        return cv2.VideoCapture(index, cv2.CAP_MSMF)
+    return cv2.VideoCapture(index)
 
-cap = cv2.VideoCapture(ARGS.camera)
+
+def _open_camera_by_name_dshow(device_name: str) -> cv2.VideoCapture:
+    # OpenCV on Windows (CAP_DSHOW) supports "video=<friendly name>".
+    return cv2.VideoCapture(f"video={device_name}", cv2.CAP_DSHOW)
+
+
+class _LatestFrameGrabber:
+    """Continuously grabs frames so processing loop always receives the newest frame."""
+
+    def __init__(self, cap: cv2.VideoCapture):
+        self._cap = cap
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._stop = False
+        self._thread: threading.Thread | None = None
+
+        self._frame = None
+        self._seq = 0
+        self._last_ok = False
+
+    def start(self) -> "_LatestFrameGrabber":
+        self._thread = threading.Thread(target=self._run, name="LatestFrameGrabber", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        with self._cond:
+            self._stop = True
+            self._cond.notify_all()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def read(self, timeout: float = 1.0):
+        """Return (ok, frame). Waits until at least one new frame arrives or timeout."""
+        end = time.time() + float(timeout)
+        with self._cond:
+            start_seq = self._seq
+            while (not self._stop) and (self._seq == start_seq) and (time.time() < end):
+                self._cond.wait(timeout=0.05)
+            return bool(self._last_ok), self._frame
+
+    def _run(self):
+        # Warmup: some backends need a few grabs before retrieve() succeeds.
+        while True:
+            with self._lock:
+                if self._stop:
+                    return
+
+            ok = self._cap.grab()
+            if not ok:
+                with self._cond:
+                    self._last_ok = False
+                    self._cond.notify_all()
+                time.sleep(0.005)
+                continue
+
+            ok2, frame = self._cap.retrieve()
+            with self._cond:
+                self._last_ok = bool(ok2 and frame is not None)
+                if self._last_ok:
+                    self._frame = frame
+                    self._seq += 1
+                self._cond.notify_all()
+
+
+requested_backend = ARGS.backend
+cap = None
+grabber = None
+
+if ARGS.device_name:
+    if os.name != "nt":
+        print("❌ --device-name is supported on Windows only.")
+        raise SystemExit(2)
+    if requested_backend != "dshow":
+        requested_backend = "dshow"
+    print(f"🎥 Opening camera device-name='{ARGS.device_name}' backend={requested_backend}")
+    cap = _open_camera_by_name_dshow(ARGS.device_name)
+else:
+    print(f"🎥 Opening camera index={ARGS.camera} backend={requested_backend}")
+    cap = _open_camera(ARGS.camera, requested_backend)
+
 if not cap.isOpened():
     print("❌ Không mở được camera!")
+    if os.name == "nt":
+        if not ARGS.device_name:
+            print("💡 Gợi ý: chọn theo tên thiết bị (ổn định nhất với USB webcam):")
+            print("   --device-name 'USB Camera' --backend dshow")
+            print("💡 Nếu vẫn muốn chọn theo index, thử backend: --backend msmf")
+        else:
+            print("💡 Gợi ý: đảm bảo đúng tên thiết bị (xem --list-cameras)")
+        print("💡 Có thể liệt kê tên camera (cần pygrabber): --list-cameras")
     raise SystemExit(1)
 
-# [FIX-3] Ép resolution về 640×480 để giảm tải xử lý
+# Try to reduce capture latency (may be ignored by backend/driver)
+try:
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, max(0, int(ARGS.buffer_size)))
+except Exception:
+    pass
+
+# [FIX-3] Ép resolution để giảm tải xử lý
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, PROCESS_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, PROCESS_HEIGHT)
 
@@ -474,11 +748,25 @@ actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 print(f"📷 Camera resolution: {actual_w}×{actual_h}")
 
+if bool(ARGS.threaded_capture):
+    grabber = _LatestFrameGrabber(cap).start()
+    if int(ARGS.drop_frames) > 0:
+        print("ℹ️  --drop-frames is ignored when --threaded-capture is enabled.")
+
 prev_time = time.time()
 
 try:
     while True:
-        ret, frame = cap.read()
+        if grabber is not None:
+            ret, frame = grabber.read(timeout=1.0)
+        else:
+            # Optional: drop frames to reduce latency when processing can't keep up.
+            if int(ARGS.drop_frames) > 0:
+                for _ in range(int(ARGS.drop_frames)):
+                    cap.grab()
+
+            ret, frame = cap.read()
+
         if not ret or frame is None:
             print("⚠️  Mất tín hiệu camera")
             break
@@ -522,13 +810,18 @@ try:
 
             # Nếu đổi người (face box thay đổi mạnh) thì reset + calibrate lại
             curr_box = _rect_to_box(face)
+            curr_area = _box_area(curr_box)
+            curr_sig = None
+            if curr_area >= MIN_FACE_AREA_FOR_SIG:
+                curr_sig = _compute_face_signature(gray, curr_box)
+
             if _last_face_box is None:
                 _last_face_box = curr_box
+                _last_face_sig = curr_sig
                 reset_person_state("first face")
             else:
                 prev_box = _last_face_box
                 prev_area = _box_area(prev_box)
-                curr_area = _box_area(curr_box)
                 (pcx, pcy) = _box_center(prev_box)
                 (ccx, ccy) = _box_center(curr_box)
                 prev_w = max(1.0, float(prev_box[2] - prev_box[0]))
@@ -537,12 +830,28 @@ try:
 
                 if miss_long:
                     _last_face_box = curr_box
+                    _last_face_sig = curr_sig
                     reset_person_state("face reacquired")
                 elif center_shift > (FACE_CHANGE_CENTER_FRAC * prev_w) or (
                     area_ratio < FACE_CHANGE_AREA_RATIO or area_ratio > (1.0 / FACE_CHANGE_AREA_RATIO)
                 ):
                     _last_face_box = curr_box
+                    _last_face_sig = curr_sig
                     reset_person_state("face changed")
+                elif curr_sig is not None and _last_face_sig is not None:
+                    # Signature-based switch detection: catches different people in similar pose/position.
+                    sim = float(np.dot(_last_face_sig, curr_sig))
+                    if sim < FACE_SIG_SIM_THRESHOLD:
+                        _last_face_box = curr_box
+                        _last_face_sig = curr_sig
+                        reset_person_state(f"face signature changed (sim={sim:.2f})")
+                    else:
+                        # Update signature slowly to adapt to small lighting changes.
+                        updated = (1.0 - FACE_SIG_EMA) * _last_face_sig + FACE_SIG_EMA * curr_sig
+                        n = float(np.linalg.norm(updated))
+                        if n > 1e-6:
+                            updated /= n
+                        _last_face_sig = updated
                 else:
                     _last_face_box = curr_box
 
@@ -642,11 +951,12 @@ try:
             now_ts = time.time()
             calibrate_pose_baseline(pitch, now_ts)
             if _pose_calibrated:
-                pitch_delta = float(pitch) - float(_pose_baseline_pitch)
-                pose_trigger = pitch_delta < PITCH_DELTA_THRESHOLD
+                pitch_drop = float(_pose_baseline_pitch) - float(pitch)
+                # Trigger if drop vs baseline is large OR pitch is strongly downward in absolute terms.
+                pose_trigger = (pitch_drop > float(_pose_delta_threshold)) or (float(pitch) <= float(PITCH_ABS_NOD_LIMIT))
             else:
-                pitch_delta = 0.0
-                pose_trigger = pitch < PITCH_NOD_THRESHOLD
+                pitch_drop = 0.0
+                pose_trigger = float(pitch) <= float(PITCH_ABS_NOD_LIMIT)
 
             if pose_trigger:
                 POSE_COUNTER += 1
@@ -671,10 +981,13 @@ try:
                     (
                         f"P:{pitch:.1f} raw:{pitch_raw:.1f} "
                         + (
-                            f"base:{_pose_baseline_pitch:.1f} d:{pitch_delta:.1f} "
+                            f"base:{_pose_baseline_pitch:.1f} drop:{pitch_drop:.1f} "
                             if _pose_calibrated
                             else "calib... "
                         )
+                        + (f"th:{_pose_delta_threshold:.1f} " if _pose_calibrated else "")
+                        + f"abs:{PITCH_ABS_NOD_LIMIT:.0f} "
+                        + f"tr:{int(pose_trigger)} cnt:{POSE_COUNTER}/{POSE_CONSEC_FRAMES} "
                         + f"Y:{_yaw:.1f} R:{_roll:.1f}"
                     ),
                     (10, frame.shape[0] - 20),
@@ -739,6 +1052,8 @@ except KeyboardInterrupt:
     pass
 
 finally:
+    if grabber is not None:
+        grabber.stop()
     cap.release()
     try:
         _alert_channel.stop()
