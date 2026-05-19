@@ -433,6 +433,10 @@ try:
         if key == ord("q"):
             break
 
+except KeyboardInterrupt:
+    # Exit gracefully on Ctrl+C
+    pass
+
 finally:
     cap.release()
     pygame.mixer.music.stop()
