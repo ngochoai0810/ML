@@ -1,0 +1,19 @@
+classes: ['closed', 'open', 'yawn']
+val_split: 0.2 seed: 42 img_size: 64 batch: 32
+val_loss: 0.101013
+val_acc : 0.964873 (96.49%)
+confusion_matrix (rows=true, cols=pred):
+[[539  49   0]
+ [ 13 576   0]
+ [  0   0 588]]
+
+classification_report:
+              precision    recall  f1-score   support
+
+      closed     0.9764    0.9167    0.9456       588
+        open     0.9216    0.9779    0.9489       589
+        yawn     1.0000    1.0000    1.0000       588
+
+    accuracy                         0.9649      1765
+   macro avg     0.9660    0.9649    0.9648      1765
+weighted avg     0.9660    0.9649    0.9648      1765
