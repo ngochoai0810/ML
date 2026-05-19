@@ -1,0 +1,20 @@
+Eval on current dataset/ (validation_split=0.2, seed=42)
+TF: 2.21.0
+Val acc: 0.9917 (99.17%)
+Val loss: 0.0209
+Classes: ["closed", "open", "yawn"]
+Class indices: {"closed": 0, "open": 1, "yawn": 2}
+Confusion matrix (rows=true, cols=pred):
+[[394   0   0]
+ [ 13 576   0]
+ [  0   0 588]]
+
+              precision    recall  f1-score   support
+
+      closed     0.9681    1.0000    0.9838       394
+        open     1.0000    0.9779    0.9888       589
+        yawn     1.0000    1.0000    1.0000       588
+
+    accuracy                         0.9917      1571
+   macro avg     0.9894    0.9926    0.9909      1571
+weighted avg     0.9920    0.9917    0.9917      1571

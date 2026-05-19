@@ -1,20 +1,24 @@
-"""
-train_cnn.py — Colab-ready CNN training script
+"""train_cnn.py — Colab-ready CNN training script
+
 Driver Drowsiness Detector — Eye State Classification
 
 Cách dùng trên Google Colab:
-  1. Upload file này lên Colab
-  2. Upload dataset.zip (hoặc thư mục dataset/), giải nén
-  3. Runtime > Change runtime type > T4 GPU
-  4. Chạy: !python train_cnn.py
-  5. Tải về: best_model.h5, eye_model.tflite, class_indices.json,
-             training_history.png, confusion_matrix.png
+    1. Upload file này lên Colab
+    2. Upload dataset.zip (hoặc thư mục dataset/), giải nén
+    3. Runtime > Change runtime type > T4 GPU
+    4. Chạy: !python train_cnn.py
+    5. Tải về: best_model.h5, eye_model.tflite, class_indices.json,
+                         training_history.png, confusion_matrix.png
+
+Tip (train tiếp sau khi thêm dữ liệu mới):
+    - Fine-tune (resume từ model cũ) với LR nhỏ:
+            python train_cnn.py --resume best_model.h5 --lr 1e-4 --epochs 15
 
 Cấu trúc dataset mong đợi:
-  dataset/
-    open/     ← ảnh mắt mở   (300-500 ảnh .jpg)
-    closed/   ← ảnh mắt nhắm (300-500 ảnh .jpg)
-    yawn/     ← miệng ngáp   (200-300 ảnh .jpg) [tuỳ chọn]
+    dataset/
+        open/     ← ảnh mắt mở   (300-500 ảnh .jpg)
+        closed/   ← ảnh mắt nhắm (300-500 ảnh .jpg)
+        yawn/     ← miệng ngáp   (200-300 ảnh .jpg) [tuỳ chọn]
 """
 
 # ─────────────────────────────────────────────────────────────
@@ -22,6 +26,7 @@ Cấu trúc dataset mong đợi:
 # ─────────────────────────────────────────────────────────────
 # !pip install tensorflow matplotlib seaborn scikit-learn
 
+import argparse
 import json
 import os
 import sys
@@ -41,11 +46,69 @@ from PIL import Image
 print(f"✅ TensorFlow version: {tf.__version__}")
 print(f"✅ GPU available: {len(tf.config.list_physical_devices('GPU')) > 0}")
 
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Train / fine-tune EyeStateCNN from dataset/ (flow_from_directory)."
+    )
+    parser.add_argument("--dataset", default="dataset", help="Dataset folder (default: dataset)")
+    parser.add_argument("--dataset-zip", default="dataset.zip", help="Zip to extract if dataset folder missing")
+    parser.add_argument("--img-size", type=int, default=64, help="Input image size (default: 64)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32)")
+    parser.add_argument("--epochs", type=int, default=40, help="Max epochs (default: 40)")
+    parser.add_argument("--val-split", type=float, default=0.2, help="Validation split (default: 0.2)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Path to an existing .h5 model to continue training (fine-tune).",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate for (re)compile (default: 1e-3). Use 1e-4 for fine-tune.",
+    )
+    parser.add_argument(
+        "--out-model",
+        default="best_model.h5",
+        help="Output .h5 path for ModelCheckpoint (default: best_model.h5)",
+    )
+    parser.add_argument(
+        "--out-tflite",
+        default="eye_model.tflite",
+        help="Output .tflite path (default: eye_model.tflite)",
+    )
+    parser.add_argument(
+        "--out-class-indices",
+        default="class_indices.json",
+        help="Output class indices json (default: class_indices.json)",
+    )
+    parser.add_argument(
+        "--out-history",
+        default="training_history.png",
+        help="Output training history plot (default: training_history.png)",
+    )
+    parser.add_argument(
+        "--out-cm",
+        default="confusion_matrix.png",
+        help="Output confusion matrix plot (default: confusion_matrix.png)",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show matplotlib windows (default: off; figures are always saved).",
+    )
+    return parser.parse_args()
+
+
+ARGS = _parse_args()
+
 # ─────────────────────────────────────────────────────────────
 # BƯỚC 1 — Giải nén dataset (nếu upload file .zip lên Colab)
 # ─────────────────────────────────────────────────────────────
-DATASET_ZIP = "dataset.zip"  # tên file zip bạn upload
-DATASET_DIR = "dataset"  # thư mục sau khi giải nén
+DATASET_ZIP = ARGS.dataset_zip  # tên file zip bạn upload
+DATASET_DIR = ARGS.dataset  # thư mục sau khi giải nén
 
 if not os.path.isdir(DATASET_DIR):
     if os.path.exists(DATASET_ZIP):
@@ -108,11 +171,11 @@ NUM_CLASSES = len(classes)
 # ─────────────────────────────────────────────────────────────
 # BƯỚC 3 — Cấu hình
 # ─────────────────────────────────────────────────────────────
-IMG_SIZE = 64  # ảnh 64x64 (crop mắt từ collect_data.py)
-BATCH_SIZE = 32
-EPOCHS = 40  # EarlyStopping sẽ dừng sớm nếu không cải thiện
-VALIDATION_SPLIT = 0.2  # 80% train, 20% validation
-SEED = 42
+IMG_SIZE = ARGS.img_size  # ảnh 64x64 (crop mắt từ collect_data.py)
+BATCH_SIZE = ARGS.batch_size
+EPOCHS = ARGS.epochs  # EarlyStopping sẽ dừng sớm nếu không cải thiện
+VALIDATION_SPLIT = ARGS.val_split  # 80% train, 20% validation
+SEED = ARGS.seed
 
 # ─────────────────────────────────────────────────────────────
 # BƯỚC 4 — Data Augmentation & Generator
@@ -205,14 +268,19 @@ def build_model(num_classes: int) -> tf.keras.Model:
     return model
 
 
-model = build_model(NUM_CLASSES)
+if ARGS.resume:
+    print(f"\n🔁 Resume training from: {ARGS.resume}")
+    model = tf.keras.models.load_model(ARGS.resume)
+else:
+    model = build_model(NUM_CLASSES)
+
 model.summary()
 
 # ─────────────────────────────────────────────────────────────
 # BƯỚC 6 — Compile
 # ─────────────────────────────────────────────────────────────
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    optimizer=tf.keras.optimizers.Adam(learning_rate=ARGS.lr),
     loss="categorical_crossentropy",
     metrics=["accuracy"],
 )
@@ -232,7 +300,7 @@ cb_list = [
         verbose=1,
     ),
     callbacks.ModelCheckpoint(
-        "best_model.h5", monitor="val_accuracy", save_best_only=True, verbose=1
+        ARGS.out_model, monitor="val_accuracy", save_best_only=True, verbose=1
     ),
 ]
 
@@ -267,7 +335,7 @@ print("\n✅ Training hoàn tất!")
 # BƯỚC 9 — Đánh giá & vẽ biểu đồ
 # ─────────────────────────────────────────────────────────────
 # Tải lại model tốt nhất
-model = tf.keras.models.load_model("best_model.h5")
+model = tf.keras.models.load_model(ARGS.out_model)
 val_loss, val_acc = model.evaluate(val_gen, verbose=0)
 print(f"\n📈 Val Accuracy: {val_acc:.4f} ({val_acc*100:.2f}%)")
 print(f"📉 Val Loss:     {val_loss:.4f}")
@@ -292,9 +360,12 @@ ax2.legend()
 ax2.grid(True)
 
 plt.tight_layout()
-plt.savefig("training_history.png", dpi=150)
-plt.show()
-print("💾 Đã lưu: training_history.png")
+plt.savefig(ARGS.out_history, dpi=150)
+if ARGS.show:
+    plt.show()
+else:
+    plt.close(fig)
+print(f"💾 Đã lưu: {ARGS.out_history}")
 
 # Confusion matrix
 val_gen.reset()
@@ -309,9 +380,12 @@ plt.title("Confusion Matrix")
 plt.ylabel("Thực tế")
 plt.xlabel("Dự đoán")
 plt.tight_layout()
-plt.savefig("confusion_matrix.png", dpi=150)
-plt.show()
-print("💾 Đã lưu: confusion_matrix.png")
+plt.savefig(ARGS.out_cm, dpi=150)
+if ARGS.show:
+    plt.show()
+else:
+    plt.close()
+print(f"💾 Đã lưu: {ARGS.out_cm}")
 
 # Classification report
 print("\n📋 Classification Report:")
@@ -325,13 +399,13 @@ converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]  # quantization nhẹ
 
 tflite_model = converter.convert()
-with open("eye_model.tflite", "wb") as f:
+with open(ARGS.out_tflite, "wb") as f:
     f.write(tflite_model)
 
-size_h5 = os.path.getsize("best_model.h5") / 1024
-size_tflite = os.path.getsize("eye_model.tflite") / 1024
-print(f"✅ best_model.h5    : {size_h5:.1f} KB")
-print(f"✅ eye_model.tflite : {size_tflite:.1f} KB")
+size_h5 = os.path.getsize(ARGS.out_model) / 1024
+size_tflite = os.path.getsize(ARGS.out_tflite) / 1024
+print(f"✅ {ARGS.out_model}    : {size_h5:.1f} KB")
+print(f"✅ {ARGS.out_tflite} : {size_tflite:.1f} KB")
 
 # ─────────────────────────────────────────────────────────────
 # BƯỚC 11 — Lưu class_indices
@@ -339,23 +413,23 @@ print(f"✅ eye_model.tflite : {size_tflite:.1f} KB")
 class_indices = train_gen.class_indices
 idx_to_class = {v: k for k, v in class_indices.items()}
 
-with open("class_indices.json", "w", encoding="utf-8") as f:
+with open(ARGS.out_class_indices, "w", encoding="utf-8") as f:
     json.dump(idx_to_class, f, indent=2, ensure_ascii=False)
 
-print(f"\n💾 Đã lưu class_indices.json: {idx_to_class}")
+print(f"\n💾 Đã lưu {ARGS.out_class_indices}: {idx_to_class}")
 
 # ─────────────────────────────────────────────────────────────
 # TỔNG KẾT
 # ─────────────────────────────────────────────────────────────
 print("\n" + "=" * 50)
 print("🎉 HOÀN THÀNH! Các file đã tạo:")
-print("   best_model.h5          ← dùng trong integrate_cnn.py")
-print("   eye_model.tflite       ← phiên bản nhỏ hơn")
-print("   class_indices.json     ← mapping index → tên class")
-print("   training_history.png   ← biểu đồ accuracy/loss")
-print("   confusion_matrix.png   ← ma trận nhầm lẫn")
+print(f"   {ARGS.out_model}          ← dùng trong integrate_cnn.py")
+print(f"   {ARGS.out_tflite}       ← phiên bản nhỏ hơn")
+print(f"   {ARGS.out_class_indices}     ← mapping index → tên class")
+print(f"   {ARGS.out_history}   ← biểu đồ accuracy/loss")
+print(f"   {ARGS.out_cm}   ← ma trận nhầm lẫn")
 print("=" * 50)
 print("\n📌 Bước tiếp theo:")
-print("   1. Tải best_model.h5 + class_indices.json về máy")
+print(f"   1. Tải {ARGS.out_model} + {ARGS.out_class_indices} về máy")
 print("   2. Đặt vào thư mục project")
 print("   3. Chạy integrate_cnn.py")

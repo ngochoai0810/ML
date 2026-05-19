@@ -19,6 +19,7 @@ Phím tắt:
   - D để bật/tắt debug head pose (in Pitch/Yaw/Roll)
 """
 
+import argparse
 import json
 import os
 import time
@@ -90,6 +91,11 @@ EMA_ALPHA = 0.6                 # [FIX-2] cũ: 0.3 → quá smooth, phản ứng
 # Face-miss grace period (~0.5s ở 25fps)
 MAX_FACE_MISS = 12
 
+# Face selection / person switch handling
+DETECTOR_UPSAMPLE = 0          # tăng lên 1 nếu hay miss face (chậm hơn)
+FACE_CHANGE_CENTER_FRAC = 0.35 # đổi người nếu tâm mặt dịch > 35% bề rộng mặt trước
+FACE_CHANGE_AREA_RATIO = 0.55  # hoặc diện tích mặt mới <55% hoặc > (1/0.55)x mặt trước
+
 # Calibration EAR cá nhân (chỉ dùng khi fallback EAR)
 CALIBRATION_FRAMES = 75
 
@@ -141,6 +147,9 @@ _pose_calib_start = None
 _pose_pitch_samples = []
 _pose_calibrated = False
 _pose_baseline_pitch = 0.0
+
+# [NEW] Track last face to reset per-person state
+_last_face_box = None  # (l, t, r, b)
 
 MODEL_POINTS = np.array(
     [
@@ -255,6 +264,47 @@ def calibrate_pose_baseline(pitch_norm: float, now_ts: float):
         _pose_baseline_pitch = float(np.median(_pose_pitch_samples))
         _pose_calibrated = True
         print(f"✅ Pose baseline calibrated (pitch): {_pose_baseline_pitch:.1f}°")
+
+
+def _rect_to_box(rect) -> tuple:
+    return (int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom()))
+
+
+def _box_area(box: tuple) -> float:
+    l, t, r, b = box
+    return float(max(0, r - l) * max(0, b - t))
+
+
+def _box_center(box: tuple) -> tuple:
+    l, t, r, b = box
+    return ((l + r) / 2.0, (t + b) / 2.0)
+
+
+def reset_person_state(reason: str):
+    """Reset counters + calibration when switching to a different person."""
+
+    global EAR_COUNTER, MAR_COUNTER, POSE_COUNTER
+    global _ema_cnn_conf
+    global _pose_calib_start, _pose_pitch_samples, _pose_calibrated, _pose_baseline_pitch
+    global calibrated, EAR_PERSONAL_THRESHOLD, ear_samples
+
+    EAR_COUNTER = 0
+    MAR_COUNTER = 0
+    POSE_COUNTER = 0
+    _ema_cnn_conf = 0.0
+
+    _pose_calib_start = None
+    _pose_pitch_samples = []
+    _pose_calibrated = False
+    _pose_baseline_pitch = 0.0
+
+    if not USE_CNN:
+        calibrated = False
+        EAR_PERSONAL_THRESHOLD = EAR_THRESHOLD
+        ear_samples = []
+
+    stop_alarm()
+    print(f"🔄 Reset state: {reason}")
 
 
 def get_head_pose(shape, frame_shape):
@@ -407,7 +457,11 @@ def draw_dashboard(frame, ear, mar, pitch, ear_alert, mar_alert, pose_alert):
 # ─────────────────────────────────────────────────────────────
 # 5) VÒNG LẶP CHÍNH
 # ─────────────────────────────────────────────────────────────
-cap = cv2.VideoCapture(1)
+_argp = argparse.ArgumentParser(description="Driver drowsiness detector (CNN + landmarks)")
+_argp.add_argument("--camera", type=int, default=1, help="Camera index (default: 1)")
+ARGS = _argp.parse_args()
+
+cap = cv2.VideoCapture(ARGS.camera)
 if not cap.isOpened():
     print("❌ Không mở được camera!")
     raise SystemExit(1)
@@ -438,7 +492,7 @@ try:
             frame = cv2.resize(frame, (PROCESS_WIDTH, int(fh * scale)))
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = _detector(gray, 0)
+        faces = _detector(gray, DETECTOR_UPSAMPLE)
 
         ear = _last_valid_ear
         mar = _last_valid_mar
@@ -460,154 +514,178 @@ try:
             mar_alert = MAR_COUNTER >= MAR_CONSEC_FRAMES
             pose_alert = POSE_COUNTER >= POSE_CONSEC_FRAMES
         else:
+            miss_long = FACE_MISS_FRAMES > MAX_FACE_MISS
             FACE_MISS_FRAMES = 0
-            for face in faces:
-                shape = face_utils.shape_to_np(_predictor(gray, face))
 
-                # ── Mắt ─────────────────────────────────────────
-                left_eye = shape[lStart:lEnd]
-                right_eye = shape[rStart:rEnd]
-                ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
-                _last_valid_ear = ear
+            # Chọn khuôn mặt lớn nhất (tránh pick nhầm mặt nhỏ/xa)
+            face = max(faces, key=lambda r: r.width() * r.height())
 
-                if USE_CNN:
-                    # [FIX-3] Crop cả 2 mắt rồi predict 1 lần batch
-                    crops = []
-                    for eye_pts in (left_eye, right_eye):
-                        (ex, ey, ew, eh) = cv2.boundingRect(eye_pts)
-                        pad = 6
-                        crop = gray[
-                            max(0, ey - pad): min(gray.shape[0], ey + eh + pad),
-                            max(0, ex - pad): min(gray.shape[1], ex + ew + pad),
-                        ]
-                        crops.append(crop if crop.size > 0 else None)
+            # Nếu đổi người (face box thay đổi mạnh) thì reset + calibrate lại
+            curr_box = _rect_to_box(face)
+            if _last_face_box is None:
+                _last_face_box = curr_box
+                reset_person_state("first face")
+            else:
+                prev_box = _last_face_box
+                prev_area = _box_area(prev_box)
+                curr_area = _box_area(curr_box)
+                (pcx, pcy) = _box_center(prev_box)
+                (ccx, ccy) = _box_center(curr_box)
+                prev_w = max(1.0, float(prev_box[2] - prev_box[0]))
+                center_shift = ((ccx - pcx) ** 2 + (ccy - pcy) ** 2) ** 0.5
+                area_ratio = (curr_area / prev_area) if prev_area > 1 else 1.0
 
-                    avg_conf = predict_eye_cnn_batch(crops)
-                    # [FIX-2] EMA_ALPHA cao hơn → phản ứng nhanh hơn
-                    _ema_cnn_conf = EMA_ALPHA * avg_conf + (1 - EMA_ALPHA) * _ema_cnn_conf
-                    eye_trigger = _ema_cnn_conf > CNN_CLOSED_THRESHOLD
+                if miss_long:
+                    _last_face_box = curr_box
+                    reset_person_state("face reacquired")
+                elif center_shift > (FACE_CHANGE_CENTER_FRAC * prev_w) or (
+                    area_ratio < FACE_CHANGE_AREA_RATIO or area_ratio > (1.0 / FACE_CHANGE_AREA_RATIO)
+                ):
+                    _last_face_box = curr_box
+                    reset_person_state("face changed")
+                else:
+                    _last_face_box = curr_box
 
+            shape = face_utils.shape_to_np(_predictor(gray, face))
+
+            # ── Mắt ─────────────────────────────────────────
+            left_eye = shape[lStart:lEnd]
+            right_eye = shape[rStart:rEnd]
+            ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
+            _last_valid_ear = ear
+
+            if USE_CNN:
+                # [FIX-3] Crop cả 2 mắt rồi predict 1 lần batch
+                crops = []
+                for eye_pts in (left_eye, right_eye):
+                    (ex, ey, ew, eh) = cv2.boundingRect(eye_pts)
+                    pad = 6
+                    crop = gray[
+                        max(0, ey - pad): min(gray.shape[0], ey + eh + pad),
+                        max(0, ex - pad): min(gray.shape[1], ex + ew + pad),
+                    ]
+                    crops.append(crop if crop.size > 0 else None)
+
+                avg_conf = predict_eye_cnn_batch(crops)
+                _ema_cnn_conf = EMA_ALPHA * avg_conf + (1 - EMA_ALPHA) * _ema_cnn_conf
+                eye_trigger = _ema_cnn_conf > CNN_CLOSED_THRESHOLD
+
+                put_text_outline(
+                    frame,
+                    f"CNN: {_ema_cnn_conf:.2f} (raw:{avg_conf:.2f})",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 200, 0),
+                    thickness=2,
+                )
+            else:
+                calibrate_ear(ear)
+                ear_threshold = EAR_PERSONAL_THRESHOLD if calibrated else EAR_THRESHOLD
+                eye_trigger = ear < ear_threshold
+
+            if eye_trigger:
+                EAR_COUNTER += 1
+                if EAR_COUNTER >= EAR_CONSEC_FRAMES:
+                    ear_alert = True
                     put_text_outline(
                         frame,
-                        f"CNN: {_ema_cnn_conf:.2f} (raw:{avg_conf:.2f})",
-                        (10, 30),
+                        "!!! BUON NGU !!!",
+                        (frame.shape[1] // 2 - 140, 65),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.65,
-                        (255, 200, 0),
-                        thickness=2,
+                        1.2,
+                        (0, 0, 255),
+                        thickness=3,
+                        outline_thickness=5,
                     )
-                else:
-                    calibrate_ear(ear)
-                    ear_threshold = EAR_PERSONAL_THRESHOLD if calibrated else EAR_THRESHOLD
-                    eye_trigger = ear < ear_threshold
+                    play_alarm()
+            else:
+                EAR_COUNTER = max(0, EAR_COUNTER - 1)
+                if EAR_COUNTER == 0:
+                    stop_alarm()
 
-                if eye_trigger:
-                    EAR_COUNTER += 1
-                    if EAR_COUNTER >= EAR_CONSEC_FRAMES:
-                        ear_alert = True
-                        put_text_outline(
-                            frame,
-                            "!!! BUON NGU !!!",
-                            (frame.shape[1] // 2 - 140, 65),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.2,
-                            (0, 0, 255),
-                            thickness=3,
-                            outline_thickness=5,
-                        )
-                        play_alarm()
-                else:
-                    EAR_COUNTER = max(0, EAR_COUNTER - 1)   # giảm dần thay vì reset ngay → ổn định hơn
-                    if EAR_COUNTER == 0:
-                        stop_alarm()
+            # ── Miệng (ngáp) ─────────────────────────────────
+            mouth = shape[mStart:mEnd]
+            mar = mouth_aspect_ratio(mouth)
+            _last_valid_mar = mar
 
-                # ── Miệng (ngáp) ─────────────────────────────────
-                mouth = shape[mStart:mEnd]
-                mar = mouth_aspect_ratio(mouth)
-                _last_valid_mar = mar
+            mouth_hull = cv2.convexHull(mouth)
+            cv2.drawContours(frame, [mouth_hull], -1, (0, 100, 255), 1)
 
-                mouth_hull = cv2.convexHull(mouth)
-                cv2.drawContours(frame, [mouth_hull], -1, (0, 100, 255), 1)
-
-                if mar > MAR_THRESHOLD:
-                    MAR_COUNTER += 1
-                    if MAR_COUNTER >= MAR_CONSEC_FRAMES:
-                        mar_alert = True
-                        put_text_outline(
-                            frame,
-                            "NGAP!",
-                            (frame.shape[1] - 140, 65),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.0,
-                            (0, 0, 255),
-                            thickness=2,
-                            outline_thickness=4,
-                        )
-                else:
-                    MAR_COUNTER = max(0, MAR_COUNTER - 1)
-
-                # ── Head pose (gật đầu) ──────────────────────────
-                try:
-                    pitch, _yaw, _roll, pitch_raw = get_head_pose(shape, frame.shape)
-                    _last_valid_pitch = pitch
-                except Exception:
-                    pitch = _last_valid_pitch
-                    pitch_raw = pitch
-                    _yaw = 0.0
-                    _roll = 0.0
-
-                # [NEW] Calibrate baseline (pitch) và dùng delta để detect cúi đầu ổn định hơn
-                now_ts = time.time()
-                calibrate_pose_baseline(pitch, now_ts)
-                if _pose_calibrated:
-                    pitch_delta = float(pitch) - float(_pose_baseline_pitch)
-                    pose_trigger = pitch_delta < PITCH_DELTA_THRESHOLD
-                else:
-                    pitch_delta = 0.0
-                    pose_trigger = pitch < PITCH_NOD_THRESHOLD
-
-                # CHỈ báo khi thực sự cúi (delta âm đủ lớn). KHÔNG dùng abs().
-                if pose_trigger:
-                    POSE_COUNTER += 1
-                    if POSE_COUNTER >= POSE_CONSEC_FRAMES:
-                        pose_alert = True
-                        put_text_outline(
-                            frame,
-                            "GAT DAU!",
-                            (frame.shape[1] // 2 - 90, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.0,
-                            (0, 165, 255),
-                            thickness=2,
-                            outline_thickness=4,
-                        )
-                else:
-                    POSE_COUNTER = max(0, POSE_COUNTER - 1)
-
-                if DEBUG_POSE:
+            if mar > MAR_THRESHOLD:
+                MAR_COUNTER += 1
+                if MAR_COUNTER >= MAR_CONSEC_FRAMES:
+                    mar_alert = True
                     put_text_outline(
                         frame,
-                        (
-                            f"P:{pitch:.1f} raw:{pitch_raw:.1f} "
-                            + (
-                                f"base:{_pose_baseline_pitch:.1f} d:{pitch_delta:.1f} "
-                                if _pose_calibrated
-                                else "calib... "
-                            )
-                            + f"Y:{_yaw:.1f} R:{_roll:.1f}"
-                        ),
-                        (10, frame.shape[0] - 20),
+                        "NGAP!",
+                        (frame.shape[1] - 140, 65),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (255, 255, 0),
+                        1.0,
+                        (0, 0, 255),
                         thickness=2,
+                        outline_thickness=4,
                     )
+            else:
+                MAR_COUNTER = max(0, MAR_COUNTER - 1)
 
-                # Draw eye contours
-                cv2.drawContours(frame, [cv2.convexHull(left_eye)], -1, (0, 255, 0), 1)
-                cv2.drawContours(frame, [cv2.convexHull(right_eye)], -1, (0, 255, 0), 1)
+            # ── Head pose (gật đầu) ──────────────────────────
+            try:
+                pitch, _yaw, _roll, pitch_raw = get_head_pose(shape, frame.shape)
+                _last_valid_pitch = pitch
+            except Exception:
+                pitch = _last_valid_pitch
+                pitch_raw = pitch
+                _yaw = 0.0
+                _roll = 0.0
 
-                break  # chỉ xử lý face đầu tiên
+            now_ts = time.time()
+            calibrate_pose_baseline(pitch, now_ts)
+            if _pose_calibrated:
+                pitch_delta = float(pitch) - float(_pose_baseline_pitch)
+                pose_trigger = pitch_delta < PITCH_DELTA_THRESHOLD
+            else:
+                pitch_delta = 0.0
+                pose_trigger = pitch < PITCH_NOD_THRESHOLD
+
+            if pose_trigger:
+                POSE_COUNTER += 1
+                if POSE_COUNTER >= POSE_CONSEC_FRAMES:
+                    pose_alert = True
+                    put_text_outline(
+                        frame,
+                        "GAT DAU!",
+                        (frame.shape[1] // 2 - 90, 115),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0,
+                        (0, 165, 255),
+                        thickness=2,
+                        outline_thickness=4,
+                    )
+            else:
+                POSE_COUNTER = max(0, POSE_COUNTER - 1)
+
+            if DEBUG_POSE:
+                put_text_outline(
+                    frame,
+                    (
+                        f"P:{pitch:.1f} raw:{pitch_raw:.1f} "
+                        + (
+                            f"base:{_pose_baseline_pitch:.1f} d:{pitch_delta:.1f} "
+                            if _pose_calibrated
+                            else "calib... "
+                        )
+                        + f"Y:{_yaw:.1f} R:{_roll:.1f}"
+                    ),
+                    (10, frame.shape[0] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 0),
+                    thickness=2,
+                )
+
+            cv2.drawContours(frame, [cv2.convexHull(left_eye)], -1, (0, 255, 0), 1)
+            cv2.drawContours(frame, [cv2.convexHull(right_eye)], -1, (0, 255, 0), 1)
 
         # ── Overlay thông tin ─────────────────────────────────────
         curr_time = time.time()
