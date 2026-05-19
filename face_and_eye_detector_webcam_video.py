@@ -10,7 +10,7 @@ face_cascade = cv.CascadeClassifier("haarcascades/haarcascade_frontalface_defaul
 eye_cascade = cv.CascadeClassifier("haarcascades/haarcascade_eye.xml")
 
 #Capture video from webcam
-video_capture = cv.VideoCapture(0)
+video_capture = cv.VideoCapture(1)
 
 #Read all frames from webcam
 try:

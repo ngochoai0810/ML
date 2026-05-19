@@ -50,8 +50,8 @@ def main() -> int:
                 print("Label không hợp lệ.")
                 continue
 
-            camera_raw = input("Camera index [0]: ").strip()
-            camera = int(camera_raw) if camera_raw else 0
+            camera_raw = input("Camera index [1]: ").strip()
+            camera = int(camera_raw) if camera_raw else 1
 
             max_raw = input("Max images (0 = no limit) [0]: ").strip()
             max_images = int(max_raw) if max_raw else 0

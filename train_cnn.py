@@ -32,8 +32,11 @@ import numpy as np
 import seaborn as sns
 import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
 from tensorflow.keras import callbacks, layers, models
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+from PIL import Image
 
 print(f"✅ TensorFlow version: {tf.__version__}")
 print(f"✅ GPU available: {len(tf.config.list_physical_devices('GPU')) > 0}")
@@ -73,6 +76,33 @@ print(f"   {'TOTAL':10s}: {total} ảnh\n")
 if total < 100:
     print("⚠️  Dataset quá nhỏ (<100 ảnh). Nên thu thêm để model học tốt hơn.")
 
+# ─────────────────────────────────────────────────────────────
+# Kiểm tra ảnh corrupt (tránh crash giữa chừng khi training)
+# ─────────────────────────────────────────────────────────────
+bad_files = []
+for cls in classes:
+    cls_path = os.path.join(DATASET_DIR, cls)
+    for fname in os.listdir(cls_path):
+        fpath = os.path.join(cls_path, fname)
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            with Image.open(fpath) as img:
+                img.verify()
+        except Exception:
+            bad_files.append(fpath)
+
+if bad_files:
+    print(f"⚠️  {len(bad_files)} file ảnh lỗi — đang xóa...")
+    for f in bad_files:
+        print(f"   {f}")
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+else:
+    print("✅ Tất cả ảnh hợp lệ")
+
 NUM_CLASSES = len(classes)
 
 # ─────────────────────────────────────────────────────────────
@@ -90,7 +120,8 @@ SEED = 42
 # Augmentation chỉ áp dụng cho train, val chỉ rescale
 train_datagen = ImageDataGenerator(
     rescale=1.0 / 255,
-    rotation_range=10,  # xoay nhẹ (mắt không xoay nhiều)
+    preprocessing_function=lambda x: x,  # tường minh: không có xử lý ẩn
+    rotation_range=20,  # match góc đầu thực tế (thường ~25°)
     width_shift_range=0.1,
     height_shift_range=0.1,
     zoom_range=0.1,
@@ -191,7 +222,7 @@ model.compile(
 # ─────────────────────────────────────────────────────────────
 cb_list = [
     callbacks.EarlyStopping(
-        monitor="val_accuracy", patience=8, restore_best_weights=True, verbose=1
+        monitor="val_accuracy", patience=6, restore_best_weights=True, verbose=1
     ),
     callbacks.ReduceLROnPlateau(
         monitor="val_loss",
@@ -210,8 +241,24 @@ cb_list = [
 # ─────────────────────────────────────────────────────────────
 print("\n🚀 Bắt đầu training...\n")
 
+class_ids = np.unique(train_gen.classes)
+class_weights_arr = compute_class_weight(
+    class_weight="balanced",
+    classes=class_ids,
+    y=train_gen.classes,
+)
+class_weight_dict = {
+    int(class_id): float(weight) for class_id, weight in zip(class_ids, class_weights_arr)
+}
+print(f"⚖️  Class weights: {class_weight_dict}")
+
 history = model.fit(
-    train_gen, epochs=EPOCHS, validation_data=val_gen, callbacks=cb_list, verbose=1
+    train_gen,
+    epochs=EPOCHS,
+    validation_data=val_gen,
+    callbacks=cb_list,
+    class_weight=class_weight_dict,
+    verbose=1,
 )
 
 print("\n✅ Training hoàn tất!")

@@ -87,7 +87,7 @@ model_points = np.array(
 )
 
 #Start webcam video capture
-video_capture = cv2.VideoCapture(0)
+video_capture = cv2.VideoCapture(1)
 
 #Give some time for camera to initialize(not required)
 time.sleep(2)

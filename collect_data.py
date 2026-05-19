@@ -25,8 +25,8 @@ parser.add_argument(
 parser.add_argument(
     "--camera",
     type=int,
-    default=0,
-    help="Camera index for cv2.VideoCapture (default: 0).",
+    default=1,
+    help="Camera index for cv2.VideoCapture (default: 1).",
 )
 parser.add_argument(
     "--out-dir",
@@ -72,6 +72,15 @@ parser.add_argument(
     ),
 )
 
+parser.add_argument(
+    "--head-angle-hint",
+    default="",
+    help=(
+        "Gợi ý tư thế/góc đầu khi thu thập (ví dụ: 'nghieng trai 20-30', "
+        "'nghieng phai', 'cui xuong'). Chỉ để nhắc, không ảnh hưởng logic."
+    ),
+)
+
 args = parser.parse_args()
 
 # Ensure output directories exist
@@ -98,6 +107,9 @@ if args.auto:
     )
 else:
     print(f"Thu thập class: '{label}' — nhấn S để lưu, Q để thoát")
+
+if args.head_angle_hint:
+    print(f"🛈 Gợi ý góc đầu: {args.head_angle_hint}")
 
 last_eye_img = None
 _last_saved_img = None
@@ -200,7 +212,18 @@ try:
             # Chỉ lấy 1 face đầu tiên để preview/saving ổn định
             break
 
-        cv2.imshow("Video", frame)
+        if args.head_angle_hint:
+            cv2.putText(
+                frame,
+                f"Goi y: {args.head_angle_hint}",
+                (10, 25),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+            )
+
+            cv2.imshow("Video", frame)
 
         # Auto-save
         if args.auto and last_eye_img is not None:
