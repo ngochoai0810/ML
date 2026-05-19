@@ -60,26 +60,21 @@ The algorithm for Eye Aspect Ratio was taken from pyimagesearch.com blog, by Adr
 
 ## Quick run (Windows)
 
-Run realtime directly:
-
-- `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1`
-- If USB webcam is laggy on Windows, prefer DirectShow:
-  `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1 --backend dshow`
-- For the most stable USB webcam selection, open by device name (needs `pygrabber` to list names):
-  `./.venv311/Scripts/python.exe integrate_cnn.py --list-cameras`
-  `./.venv311/Scripts/python.exe integrate_cnn.py --device-name "USB2.0 Camera" --backend dshow`
+- Run v1: `run_v1.bat` (default camera 1) or `run_v1.bat 0`
+- Run v2: `run_v2.bat` (default camera 1) or `run_v2.bat 0`
+- A/B compare (v1 then v2): `run_ab.bat` or `run_ab.bat 0`
 
 ## Quick run (Git Bash)
 
-- `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1`
-- A/B compare models (optional): `./run_realtime_compare.sh` (default camera 1) or `./run_realtime_compare.sh 0`
+- Run v1: `./run_v1.sh` (default camera 1) or `./run_v1.sh 0`
+- Run v2: `./run_v2.sh` (default camera 1) or `./run_v2.sh 0`
+- A/B compare: `./run_realtime_compare.sh` (default camera 1) or `./run_realtime_compare.sh 0`
 
 ## Manual commands (venv python)
 
-- Default model:
-  `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1`
-- Pick a specific model (optional):
+- v1:
   `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1 --model best_model.h5 --class-json class_indices.json`
+- v2:
   `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1 --model best_model_v2.h5 --class-json class_indices_v2.json`
 
 ## Collect minimal data per user (example)
