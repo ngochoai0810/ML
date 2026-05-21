@@ -170,6 +170,7 @@ Pillow>=8.0.0
 
 ### 1. Clone hoặc tải dự án
 ```bash
+git clone https://github.com/ngochoai0810/ML
 cd /path/to/ML
 ```
 
@@ -177,7 +178,9 @@ cd /path/to/ML
 ```bash
 pip install -r requirements.txt
 ```
-
+```bash
+ `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1 --model best_model_v2.h5 --class-json class_indices_v2.json`
+```
 ### 3. Download Shape Predictor (Important!)
 ```bash
 # Download từ dlib
