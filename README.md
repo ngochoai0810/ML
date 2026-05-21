@@ -178,8 +178,9 @@ cd /path/to/ML
 ```bash
 pip install -r requirements.txt
 ```
+Chạy môi trường
 ```bash
- `./.venv311/Scripts/python.exe integrate_cnn.py --camera 1 --model best_model_v2.h5 --class-json class_indices_v2.json`
+ ./.venv311/Scripts/python.exe integrate_cnn.py --camera 1 --model best_model_v2.h5 --class-json class_indices_v2.json
 ```
 ### 3. Download Shape Predictor (Important!)
 ```bash
@@ -202,59 +203,11 @@ python probe_cameras.py
 
 ##  Cách Sử Dụng
 
-### **Option 1: Demo - Detect Mắt Từ Ảnh**
+chạy trực tiếp:
 ```bash
-# Đặt ảnh vào thư mục images/ với tên "test.jpeg"
-python face_and_eye_detector_single_image.py
+python integrate_cnn.py --camera 1 --model best_model_v2.h5 --class-json class_indices.json
 ```
-
-### **Option 2: Demo - Detect Mắt Từ Webcam**
-```bash
-python face_and_eye_detector_webcam_video.py
-```
-
-### **Option 3: V1 - Phát Hiện Buồn Ngủ (dlib + EAR)**
-```bash
-# Windows
-run_v1.bat
-# Hoặc
-run_v1.bat 0  # Chỉ định camera index
-
-# Linux/Git Bash
-./run_v1.sh
-./run_v1.sh 0
-```
-
-Hoặc chạy trực tiếp:
-```bash
-python drowsiness_detect.py
-```
-
-### **Option 4: V2 - Phát Hiện Buồn Ngủ (CNN - Tốt Nhất)**
-```bash
-# Windows
-run_v2.bat
-# Hoặc
-run_v2.bat 0  # Chỉ định camera index
-
-# Linux/Git Bash
-./run_v2.sh
-./run_v2.sh 0
-```
-
-Hoặc chạy trực tiếp:
-```bash
-python integrate_cnn.py --camera 1 --model best_model.h5 --class-json class_indices.json
-```
-
-### **Option 5: So Sánh V1 & V2 (Real-time)**
-```bash
-# Windows
-run_ab.bat
-
-# Linux/Git Bash
-./run_realtime_compare.sh
-```
+`
 
 ### **Option 6: Thu Thập Dữ Liệu**
 ```bash
